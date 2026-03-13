@@ -113,14 +113,20 @@ def combine_datasets(df_hpc, df_mpc):
     ]].copy()
     
     # Prepare MPC data - select and rename columns
-    df_mpc_clean = df_mpc[[
+    # Note: plan_group may exist in MPC data to identify 'Global overview' plans
+    mpc_columns = [
         'year',
         'plan_id',
         'country',
         'mpc_requirements_usd',
         'mpc_funded_usd',
         'percent_funded'
-    ]].copy()
+    ]
+    # Add plan_group if it exists in MPC data
+    if 'plan_group' in df_mpc.columns:
+        mpc_columns.insert(3, 'plan_group')  # Insert after country
+    
+    df_mpc_clean = df_mpc[mpc_columns].copy()
     
     # Rename MPC coverage column for clarity
     df_mpc_clean = df_mpc_clean.rename(columns={
@@ -128,16 +134,28 @@ def combine_datasets(df_hpc, df_mpc):
     })
     
     # Merge on plan_id and year (outer join to include all records)
+    # NOTE: We use 'outer' join to preserve ALL plans with MPC data, even if they
+    # don't have complete HPC data. This includes 'Global overview' plans like
+    # Pakistan Floods Support Plan (1431) and Philippines Typhoons (1325) which
+    # FTS includes in global sector totals.
+    merge_keys = ['plan_id', 'year']
     df_combined = pd.merge(
         df_hpc_clean,
         df_mpc_clean,
-        on=['plan_id', 'year'],
-        how='outer'
+        on=merge_keys,
+        how='outer',
+        suffixes=('', '_mpc')  # If plan_group exists in both, keep HPC version
     )
+    
+    # If both sources have plan_group, coalesce them (prefer HPC, fallback to MPC)
+    if 'plan_group_mpc' in df_combined.columns:
+        df_combined['plan_group'] = df_combined['plan_group'].fillna(df_combined['plan_group_mpc'])
+        df_combined = df_combined.drop(columns=['plan_group_mpc'])
     
     print(f"✓ Combined dataset has {len(df_combined)} rows")
     
     # Reorder columns to match specification
+    # Keep plan_group if it exists (from either HPC or MPC data)
     column_order = [
         'year',
         'plan_id',
@@ -155,6 +173,9 @@ def combine_datasets(df_hpc, df_mpc):
         'mpc_funded_usd',
         'mpc_coverage_pct'
     ]
+    
+    # Only include columns that exist in the dataframe
+    column_order = [col for col in column_order if col in df_combined.columns]
     
     df_combined = df_combined[column_order]
     
@@ -222,6 +243,27 @@ def generate_summary(df):
     print(f"  Plans with MPC data: {df['mpc_requirements_usd'].notna().sum()}")
     print(f"  Plans with both HPC and MPC data: {(df['requirements_usd'].notna() & df['mpc_requirements_usd'].notna()).sum()}")
     print(f"  Plans with country information: {df['country'].notna().sum()}")
+    
+    # Show breakdown by plan_group if available
+    if 'plan_group' in df.columns:
+        print(f"\nPLAN GROUP BREAKDOWN (Plans with MPC data):")
+        mpc_by_group = df[df['mpc_requirements_usd'].notna()].groupby('plan_group').agg({
+            'plan_id': 'count',
+            'mpc_requirements_usd': 'sum'
+        }).sort_values('mpc_requirements_usd', ascending=False)
+        mpc_by_group.columns = ['Count', 'MPC Requirements']
+        for group, row in mpc_by_group.iterrows():
+            print(f"  {group}: {int(row['Count'])} plans, ${row['MPC Requirements']:,.0f}")
+        
+        # Highlight Global overview plans specifically
+        global_overview = df[(df['plan_group'] == 'Global overview') & (df['mpc_requirements_usd'].notna())]
+        if len(global_overview) > 0:
+            print(f"\n  NOTE: {len(global_overview)} 'Global overview' plan(s) have MPC data:")
+            for _, plan in global_overview.iterrows():
+                req = plan['mpc_requirements_usd']
+                funded = plan['mpc_funded_usd']
+                print(f"    - {plan['plan_name']} (ID: {plan['plan_id']}): Req=${req:,.0f}, Funded=${funded:,.0f}" if pd.notna(req) else f"    - {plan['plan_name']} (ID: {plan['plan_id']})")
+            print(f"    These are included in FTS global sector totals.")
 
 
 def save_combined_data(df, output_dir=None):
@@ -347,6 +389,11 @@ def create_visualizations(df, output_dir=None):
 def main():
     """
     Main execution function
+    
+    IMPORTANT: This script preserves ALL plans with MPC data, including those
+    categorized as 'Global overview'. These plans (e.g., Pakistan Floods, Philippines
+    Typhoons) are included in FTS global sector totals and should not be filtered out
+    unless you have a specific analytical reason to do so.
     """
     print("\n" + "="*80)
     print("COMBINING HPC PLAN AND MPC REQUIREMENTS DATA (2020-2026)")

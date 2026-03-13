@@ -1,17 +1,30 @@
 """
 MPC Requirements and Funding per Plan 2020-2026
 Extracts data for multiple years matching https://fts.unocha.org/global-sectors/16/summary/[YEAR]
+
+Uses the globalCluster grouping endpoint to capture MPC data regardless of
+what a plan calls its local cluster (e.g. '3RP Basic Needs' maps to global
+cluster 16 = Multipurpose Cash).
+
+API structure (fts/flow?planId={id}&groupby=globalCluster):
+  data.requirements.objects[]           → { id, name, origRequirements, revisedRequirements }
+  data.report3.fundingTotals
+      .singleFundingObjects[]           → { id, name, totalFunding, type, direction }
+      .objectsBreakdown[]              → { id, name, totalFunding, singleFunding, sharedFunding }
+
+  MPC may appear in singleFundingObjects but NOT in objectsBreakdown,
+  so we check both and prefer whichever has the data.
 """
 
 import requests
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
+import time
 
 
 # API Configuration
 BASE_URL = "https://api.hpc.tools/v1/public"
-MPC_ENDPOINT = f"{BASE_URL}/governingEntity"
 FTS_ENDPOINT = f"{BASE_URL}/fts/flow"
 
 # Multipurpose Cash Cluster ID
@@ -35,13 +48,12 @@ def get_plans(year):
 
 def get_mpc_data_from_global_cluster(plan_id, debug=False):
     """Get MPC requirements and funding from the globalCluster grouping.
-    
+
     This is the authoritative source — it catches plans where the local
-    cluster is named something else (e.g. 'Basic Needs' in the 3RP)
-    but is mapped to global cluster 16 (MPC) by FTS.
-    
-    Returns both requirements and funding in a single API call.
-    
+    cluster is named something other than 'Multipurpose Cash' (e.g.
+    'Basic Needs' in the Syria 3RP) but is mapped to global cluster 16
+    (MPC) by FTS.
+
     Returns:
         dict: {'requirements': float or None, 'funded': float or None}
     """
@@ -50,120 +62,120 @@ def get_mpc_data_from_global_cluster(plan_id, debug=False):
         response = requests.get(url)
         response.raise_for_status()
         data = response.json()
-        
-        requirements = None
-        funding = None
-        
-        # Get requirements from data.requirements.objects
+
+        result = {'requirements': None, 'funded': None}
+
+        # --- REQUIREMENTS ---
+        # Live in data.requirements.objects[] with id directly on the object
         req_objects = data.get('data', {}).get('requirements', {}).get('objects', [])
         for obj in req_objects:
-            # Check if id matches MPC_CLUSTER_ID (as integer)
             if obj.get('id') == MPC_CLUSTER_ID:
-                requirements = obj.get('revisedRequirements')
+                # Prefer revisedRequirements, fall back to origRequirements
+                result['requirements'] = obj.get('revisedRequirements') or obj.get('origRequirements')
                 if debug:
-                    print(f"\n[DEBUG] Found MPC requirements: ${requirements:,.0f}" if requirements else "\n[DEBUG] MPC requirements found but value is None/0")
+                    print(f"      [DEBUG] Found MPC requirements: "
+                          f"revised={obj.get('revisedRequirements')}, "
+                          f"orig={obj.get('origRequirements')}")
                 break
-        
-        # Get funding from report3.fundingTotals.objects[0].objectsBreakdown
-        # The structure has one wrapper object, then the actual clusters are in objectsBreakdown
-        funding_wrapper = data.get('data', {}).get('report3', {}).get('fundingTotals', {}).get('objects', [])
-        if funding_wrapper and len(funding_wrapper) > 0:
-            # Get the objectsBreakdown array from the wrapper
-            objects_breakdown = funding_wrapper[0].get('objectsBreakdown', [])
-            
-            for obj in objects_breakdown:
-                # ID might be string or int, check both
-                obj_id = obj.get('id')
-                if obj_id == str(MPC_CLUSTER_ID) or obj_id == MPC_CLUSTER_ID:
-                    funding = obj.get('totalFunding')
+
+        # --- FUNDING ---
+        # Can appear in two places within report3.fundingTotals:
+        #   1. singleFundingObjects[] — for funding not shared across clusters
+        #   2. objectsBreakdown[] — for the full breakdown including shared
+        # MPC sometimes only appears in singleFundingObjects (e.g. Syria 3RP),
+        # so we check both and take whichever has data.
+        report3 = data.get('data', {}).get('report3', {}).get('fundingTotals', {})
+
+        # Check singleFundingObjects first (most common location for MPC)
+        for obj in report3.get('singleFundingObjects', []):
+            if obj.get('id') == MPC_CLUSTER_ID:
+                result['funded'] = obj.get('totalFunding')
+                if debug:
+                    print(f"      [DEBUG] Found MPC funding in singleFundingObjects: {result['funded']}")
+                break
+
+        # If not found there, check objectsBreakdown
+        if result['funded'] is None:
+            for obj in report3.get('objectsBreakdown', []):
+                if obj.get('id') == MPC_CLUSTER_ID:
+                    result['funded'] = obj.get('totalFunding')
                     if debug:
-                        print(f"[DEBUG] Found MPC funding: ${funding:,.0f}" if funding else "[DEBUG] MPC funding found but value is None/0")
+                        print(f"      [DEBUG] Found MPC funding in objectsBreakdown: {result['funded']}")
                     break
-        
-        # Only return values if they're positive
-        return {
-            'requirements': requirements if requirements and requirements > 0 else None,
-            'funded': funding if funding and funding > 0 else None
-        }
-        
-    except Exception as e:
-        if debug:
-            print(f"[DEBUG] Error: {e}")
+
+        # Clean up: treat zero as None
+        if result['requirements'] is not None and result['requirements'] <= 0:
+            result['requirements'] = None
+        if result['funded'] is not None and result['funded'] <= 0:
+            result['funded'] = None
+
+        return result
+
+    except requests.exceptions.RequestException as e:
+        print(f"      [!] API error for plan {plan_id}: {e}")
         return {'requirements': None, 'funded': None}
 
 
 def extract_mpc_data_for_year(year):
-    """Extract MPC requirements and funding for all plans in a specific year
-    
-    NOTE: This includes ALL plans with MPC data, including 'Global overview' plans.
-    Some plans (e.g., Pakistan Floods Support Plan 1431, Philippines Typhoons 1325)
-    are categorized as 'Global overview' but have legitimate MPC requirements/funding
-    that FTS includes in global sector totals. We capture plan_group to allow filtering
-    downstream if needed, but we don't exclude them here.
-    """
-    
+    """Extract MPC requirements and funding for all plans in a specific year"""
+
     print(f"\n{'='*70}")
     print(f"Processing Year: {year}")
     print(f"{'='*70}")
-    
+
     # Get all plans for the year
     plans = get_plans(year)
     print(f"   [OK] Found {len(plans)} plans for {year}\n")
-    
+
     results = []
-    
-    print("   Processing plans...\n")
-    
+
     for i, plan in enumerate(plans, 1):
         plan_id = plan.get('id')
         plan_version = plan.get('planVersion', {})
         plan_name = plan_version.get('name', 'Unknown')
-        
-        # Get plan type (plan_group) - categories[0].group
+
+        # Get plan type
         plan_type = ''
-        plan_group = ''
         if plan.get('categories') and len(plan.get('categories', [])) > 0:
             plan_type = plan['categories'][0].get('name', '')
-            # Extract plan_group to identify 'Global overview' etc.
-            plan_group = plan['categories'][0].get('group', '')
-        
+
         # Get country
         country = ''
         if plan.get('locations') and len(plan.get('locations', [])) > 0:
             country = plan['locations'][0].get('name', '')
-        
+
         if i % 10 == 0 or i == len(plans):
-            print(f"   [{i}/{len(plans)}] Processing {plan_name}...")
-        
-        # Get MPC requirements and funding in a single API call
-        # Enable debug for first plan only
+            print(f"   [{i}/{len(plans)}] {plan_name[:60]}...")
+
+        # Debug mode for first plan of each year to verify structure
         debug_mode = (i == 1)
         mpc_data = get_mpc_data_from_global_cluster(plan_id, debug=debug_mode)
         mpc_requirements = mpc_data.get('requirements')
         mpc_funding = mpc_data.get('funded')
-        
-        # Only add if there's MPC data
+
+        # Only include plans that have some MPC data
         if mpc_requirements or mpc_funding:
-            # Calculate percentage funded
             pct_funded = None
             if mpc_requirements and mpc_funding and mpc_requirements > 0:
                 pct_funded = (mpc_funding / mpc_requirements) * 100
-            
+
             results.append({
                 'year': year,
                 'plan_id': plan_id,
                 'plan_name': plan_name,
                 'plan_type': plan_type,
-                'plan_group': plan_group,  # Added to identify 'Global overview' plans
                 'country': country,
                 'mpc_requirements_usd': mpc_requirements,
                 'mpc_funded_usd': mpc_funding,
                 'percent_funded': pct_funded,
                 'unfunded_usd': (mpc_requirements - mpc_funding) if (mpc_requirements and mpc_funding) else None
             })
-    
+
+        # Small delay to be kind to the API
+        time.sleep(0.1)
+
     print(f"\n   [OK] Found {len(results)} plans with MPC data for {year}")
-    
+
     return results
 
 
@@ -172,44 +184,38 @@ def save_to_csv(data, combined=True):
     if not data:
         print("\n   [X] No MPC data to save")
         return None
-    
-    # Create DataFrame
+
     df = pd.DataFrame(data)
-    
+
     # Sort by year and requirements descending
     df = df.sort_values(['year', 'mpc_requirements_usd'], ascending=[True, False], na_position='last')
-    
-    # Create timestamp
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    
-    # Ensure data directory exists
-    data_dir = OUTPUT_DIR
-    data_dir.mkdir(parents=True, exist_ok=True)
-    
+
+    # Ensure output directory exists
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
     files_saved = []
-    
+
     if combined:
-        # Save combined file
         filename = f"mpc_requirements_funding_2020_2026_{timestamp}.csv"
-        filepath = data_dir / filename
+        filepath = OUTPUT_DIR / filename
         df.to_csv(filepath, index=False)
         files_saved.append(filepath)
-        
-        # Calculate totals
+
         total_requirements = df['mpc_requirements_usd'].sum()
         total_funded = df['mpc_funded_usd'].sum()
         overall_pct = (total_funded / total_requirements * 100) if total_requirements > 0 else 0
-        
+
         print(f"\n{'=' * 70}")
         print(f"[SUCCESS] Combined data saved to: {filepath}")
         print(f"\nOVERALL SUMMARY (2020-2026):")
         print(f"  Total plans with MPC data: {len(df)}")
         print(f"  Total MPC Requirements: ${total_requirements:,.0f}")
-        print(f"  Total MPC Funded: ${total_funded:,.0f}")
-        print(f"  Overall Funding %: {overall_pct:.1f}%")
-        print(f"  Unfunded: ${(total_requirements - total_funded):,.0f}")
-        
-        # Print year-by-year summary
+        print(f"  Total MPC Funded:       ${total_funded:,.0f}")
+        print(f"  Overall Funding %:      {overall_pct:.1f}%")
+        print(f"  Unfunded:               ${(total_requirements - total_funded):,.0f}")
+
         print(f"\nYEAR-BY-YEAR SUMMARY:")
         print(f"{'-' * 70}")
         for year in sorted(df['year'].unique()):
@@ -217,20 +223,23 @@ def save_to_csv(data, combined=True):
             year_req = year_df['mpc_requirements_usd'].sum()
             year_funded = year_df['mpc_funded_usd'].sum()
             year_pct = (year_funded / year_req * 100) if year_req > 0 else 0
-            print(f"  {year}: {len(year_df)} plans | Req: ${year_req:,.0f} | Funded: ${year_funded:,.0f} | {year_pct:.1f}%")
-        
+            print(f"  {year}: {len(year_df):>3} plans | "
+                  f"Req: ${year_req:>16,.0f} | "
+                  f"Funded: ${year_funded:>16,.0f} | "
+                  f"{year_pct:>5.1f}%")
+
         print(f"{'=' * 70}\n")
-    
-    # Also save individual year files
+
+    # Save individual year files
     print("Saving individual year files...")
     for year in sorted(df['year'].unique()):
         year_df = df[df['year'] == year]
         year_filename = f"mpc_requirements_funding_{year}_{timestamp}.csv"
-        year_filepath = data_dir / year_filename
+        year_filepath = OUTPUT_DIR / year_filename
         year_df.to_csv(year_filepath, index=False)
         files_saved.append(year_filepath)
-        print(f"  ✓ Saved {year} data to: {year_filename}")
-    
+        print(f"  Saved {year}: {len(year_df)} plans -> {year_filename}")
+
     return files_saved
 
 
@@ -238,21 +247,23 @@ def main():
     """Main execution"""
     print("\n" + "=" * 70)
     print(">> MPC REQUIREMENTS AND FUNDING 2020-2026")
-    print("   Processing data for years: " + ", ".join(map(str, YEARS)))
+    print("   Source: FTS globalCluster grouping (cluster 16)")
+    print("   Matching: https://fts.unocha.org/global-sectors/16/summary/[YEAR]")
+    print("   Processing years: " + ", ".join(map(str, YEARS)))
     print("=" * 70 + "\n")
-    
+
     all_data = []
-    
-    # Process each year
+
     for year in YEARS:
         try:
             year_data = extract_mpc_data_for_year(year)
             all_data.extend(year_data)
         except Exception as e:
             print(f"\n[ERROR] Failed to process year {year}: {e}")
+            import traceback
+            traceback.print_exc()
             continue
-    
-    # Save to CSV
+
     if all_data:
         save_to_csv(all_data, combined=True)
     else:

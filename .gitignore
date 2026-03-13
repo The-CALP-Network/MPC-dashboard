@@ -1,63 +1,97 @@
+# ----------------------------
 # Python
+# ----------------------------
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
 *.egg
+*.egg-info/
+dist/
+build/
+.eggs/
 
-# Virtual Environment
+# ----------------------------
+# Virtual environments
+# ----------------------------
 venv/
 env/
 ENV/
-.venv
+.venv/
+hnrp-venv/
 
-# IDE
+# ----------------------------
+# IDE / Editor files
+# ----------------------------
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# Environment variables
+# ----------------------------
+# Environment variables / secrets
+# ----------------------------
 .env
-.env.local
-
-# Data files (uncomment if you want to exclude CSVs from Git)
-*.json
-*.csv
-*.xlsx
-*.RData
-*.txt
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# API Keys and Secrets
+.env.*
 config.json
 secrets.json
 *.key
 
-# Project specific folders
-valid id request/
-Scraping outputs/
+# ----------------------------
+# OS junk
+# ----------------------------
+.DS_Store
+Thumbs.db
+
+# ----------------------------
+# Jupyter
+# ----------------------------
+.ipynb_checkpoints/
+
+# ----------------------------
+# Temporary files
+# ----------------------------
+*.log
+*.tmp
+*.bak
+
+# ----------------------------
+# Generated analysis data
+# ----------------------------
+*.csv
+*.xlsx
+*.xls
+*.RData
+
+# ----------------------------
+# API extraction outputs
+# ----------------------------
+mpc_data/*.csv
+plan_data/*.csv
+
+# ----------------------------
+# Validation / scan outputs
+# ----------------------------
+valid id request/*.csv
+valid id request/*.json
+valid id request/*.txt
+
+# ----------------------------
+# Temporary project dumps
+# ----------------------------
+project_*.json
+
+# ----------------------------
+# Dashboard export assets
+# ----------------------------
+plan_mpc_dashboard/*_files/
+
+# ----------------------------
+# Data output folders
+# ----------------------------
 data/
-hnrp-venv/
+combined_data/
+Scraping outputs/
+outputs/
