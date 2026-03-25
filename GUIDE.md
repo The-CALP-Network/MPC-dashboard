@@ -7,7 +7,7 @@ In Claude Cowork load the calp-fts-dashboard skill
 Recall and confirm the latest dashboard load from \hnrp-analysis\plan_mpc_dashboard
 
 Step 1: Run script [`Plan_Funded_Requirements_2020_2026.py`](../hnrp-analysis/Plan_Funded_Requirements_2020_2026.py)
-  Checkfile has been updated in (..\hnrp-analysis\plan_data)
+  ``` Checkfile has been updated in (..\hnrp-analysis\plan_data)
   
 Step 2: Run script [`MPC_requirements_funded_2020_2026.py`](../hnrp-analysis/MPC_requirements_funded_2020_2026.py)
   Check file has been updated in (..\hnrp-analysis\mpc_data)
