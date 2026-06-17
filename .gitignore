@@ -72,13 +72,6 @@ mpc_data/*.csv
 plan_data/*.csv
 
 # ----------------------------
-# Validation / scan outputs
-# ----------------------------
-valid id request/*.csv
-valid id request/*.json
-valid id request/*.txt
-
-# ----------------------------
 # Temporary project dumps
 # ----------------------------
 project_*.json
@@ -95,3 +88,14 @@ data/
 combined_data/
 Scraping outputs/
 outputs/
+
+# ----------------------------
+# Archived / internal (not for repo)
+# ----------------------------
+Archive scripts/
+Archive data/
+Comms update text/
+Validation reports/
+Updates_summary/
+skill file/
+*.skill
